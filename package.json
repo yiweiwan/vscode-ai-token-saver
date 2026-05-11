@@ -1,0 +1,162 @@
+{
+  "name": "ai-token-saver",
+  "displayName": "AI Token Saver",
+  "description": "Reduce unnecessary LLM token usage by estimating tokens, generating .aiignore, and building minimal AI context prompts.",
+  "version": "0.0.1",
+  "publisher": "your-name",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:aiTokenSaver.estimateCurrentFile",
+    "onCommand:aiTokenSaver.estimateSelection",
+    "onCommand:aiTokenSaver.generateAiIgnore",
+    "onCommand:aiTokenSaver.buildContextPack",
+    "onCommand:aiTokenSaver.createBugfixPrompt",
+    "onCommand:aiTokenSaver.copyCurrentFileContext",
+    "onCommand:aiTokenSaver.copyAsCodeBlock"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "aiTokenSaver.estimateCurrentFile",
+        "title": "AI Token Saver: Estimate Current File Tokens",
+        "category": "AI Token Saver"
+      },
+      {
+        "command": "aiTokenSaver.estimateSelection",
+        "title": "AI Token Saver: Estimate Selection Tokens",
+        "category": "AI Token Saver"
+      },
+      {
+        "command": "aiTokenSaver.generateAiIgnore",
+        "title": "AI Token Saver: Generate .aiignore",
+        "category": "AI Token Saver"
+      },
+      {
+        "command": "aiTokenSaver.buildContextPack",
+        "title": "AI Token Saver: Build Minimal Context Pack",
+        "category": "AI Token Saver"
+      },
+      {
+        "command": "aiTokenSaver.createBugfixPrompt",
+        "title": "AI Token Saver: Create Bugfix Prompt",
+        "category": "AI Token Saver"
+      },
+      {
+        "command": "aiTokenSaver.copyCurrentFileContext",
+        "title": "AI Token Saver: Copy Current File as AI Context",
+        "category": "AI Token Saver"
+      },
+      {
+        "command": "aiTokenSaver.copyAsCodeBlock",
+        "title": "AI Token Saver: Copy as Code Block",
+        "category": "AI Token Saver"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "aiTokenSaver.estimateCurrentFile",
+          "when": "editorTextFocus",
+          "group": "navigation@89"
+        },
+        {
+          "command": "aiTokenSaver.estimateSelection",
+          "when": "editorHasSelection",
+          "group": "navigation@90"
+        },
+        {
+          "command": "aiTokenSaver.copyAsCodeBlock",
+          "when": "editorTextFocus",
+          "group": "navigation@91"
+        },
+        {
+          "command": "aiTokenSaver.copyCurrentFileContext",
+          "when": "editorTextFocus",
+          "group": "navigation@92"
+        },
+        {
+          "command": "aiTokenSaver.buildContextPack",
+          "when": "editorTextFocus",
+          "group": "navigation@93"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "aiTokenSaver.generateAiIgnore",
+          "group": "navigation@90"
+        },
+        {
+          "command": "aiTokenSaver.buildContextPack",
+          "group": "navigation@91"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AI Token Saver",
+      "properties": {
+        "aiTokenSaver.maxFiles": {
+          "type": "number",
+          "default": 120,
+          "minimum": 1,
+          "description": "Maximum number of files to scan when building a context pack."
+        },
+        "aiTokenSaver.contextBudget": {
+          "type": "number",
+          "default": 20000,
+          "description": "Approximate token budget for recommended context files."
+        },
+        "aiTokenSaver.maxSelectedFiles": {
+          "type": "number",
+          "default": 20,
+          "minimum": 1,
+          "description": "Maximum number of files recommended in a generated context pack."
+        },
+        "aiTokenSaver.includePattern": {
+          "type": "string",
+          "default": "**/*.{ts,tsx,js,jsx,vue,py,go,java,cs,cpp,c,h,hpp,md,json,yaml,yml,sql,html,css,scss,less}",
+          "description": "Glob pattern used to include files when scanning a workspace."
+        },
+        "aiTokenSaver.excludeGlobs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Extra glob or .aiignore-style rules to exclude when scanning, for example **/fixtures/** or *.snap."
+        },
+        "aiTokenSaver.maxFileBytes": {
+          "type": "number",
+          "default": 1000000,
+          "minimum": 1024,
+          "description": "Maximum size of a single file to read while building a context pack."
+        },
+        "aiTokenSaver.fileReadTimeoutMs": {
+          "type": "number",
+          "default": 1500,
+          "minimum": 100,
+          "description": "Per-file read/stat timeout in milliseconds. Timed-out files are skipped instead of blocking the command."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "lint": "echo \"No linter configured for MVP\""
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.3",
+    "@vscode/vsce": "^3.6.0"
+  }
+}
