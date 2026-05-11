@@ -137,11 +137,24 @@
           "minimum": 1024,
           "description": "Maximum size of a single file to read while building a context pack."
         },
+        "aiTokenSaver.statusBarMaxFileBytes": {
+          "type": "number",
+          "default": 300000,
+          "minimum": 1024,
+          "description": "Maximum current-file size for automatic status bar token estimation. Larger files can still be estimated manually."
+        },
         "aiTokenSaver.fileReadTimeoutMs": {
           "type": "number",
           "default": 1500,
           "minimum": 100,
           "description": "Per-file read/stat timeout in milliseconds. Timed-out files are skipped instead of blocking the command."
+        },
+        "aiTokenSaver.scanConcurrency": {
+          "type": "number",
+          "default": 6,
+          "minimum": 1,
+          "maximum": 24,
+          "description": "Number of files to read concurrently while building a context pack."
         }
       }
     }

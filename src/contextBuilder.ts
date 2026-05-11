@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import { aiIgnoreToGlob, readAiIgnorePatterns } from "./aiIgnore";
-import { DEFAULT_EXCLUDE_GLOBS, getConfig } from "./config";
+import { AiTokenSaverConfig, DEFAULT_EXCLUDE_GLOBS, getConfig } from "./config";
 import { safeReadTextFile } from "./fileOps";
 import { estimateTokens, formatBytes, formatNumber } from "./tokenEstimator";
 
@@ -17,6 +17,17 @@ interface FileScore {
 interface ScanStats {
   skippedLarge: number;
   skippedUnreadable: number;
+}
+
+export interface BuildContextPackOptions {
+  rootUri?: vscode.Uri;
+  cancellationToken?: vscode.CancellationToken;
+}
+
+function throwIfCancelled(token?: vscode.CancellationToken): void {
+  if (token?.isCancellationRequested) {
+    throw new vscode.CancellationError();
+  }
 }
 
 function splitTaskTerms(task: string): string[] {
@@ -79,53 +90,107 @@ function buildExcludeGlob(extraPatterns: string[]): string {
   return `{${Array.from(new Set(globs)).join(",")}}`;
 }
 
-export async function buildContextPack(taskDescription: string): Promise<string> {
+async function resolveScanFiles(
+  config: AiTokenSaverConfig,
+  excludeGlob: string,
+  rootUri: vscode.Uri | undefined,
+  token: vscode.CancellationToken | undefined
+): Promise<{ files: vscode.Uri[]; scopeLabel: string }> {
+  throwIfCancelled(token);
+
+  if (!rootUri) {
+    const files = await vscode.workspace.findFiles(config.includePattern, excludeGlob, config.maxFiles);
+    return { files, scopeLabel: "整个工作区" };
+  }
+
+  const relativeRoot = vscode.workspace.asRelativePath(rootUri);
+  const stat = await vscode.workspace.fs.stat(rootUri);
+  throwIfCancelled(token);
+
+  if (stat.type === vscode.FileType.File) {
+    return { files: [rootUri], scopeLabel: relativeRoot };
+  }
+
+  const pattern = new vscode.RelativePattern(rootUri, config.includePattern);
+  const files = await vscode.workspace.findFiles(pattern, excludeGlob, config.maxFiles);
+  return { files, scopeLabel: relativeRoot };
+}
+
+async function scoreFiles(
+  files: vscode.Uri[],
+  config: AiTokenSaverConfig,
+  taskDescription: string,
+  activeFile: string | undefined,
+  token: vscode.CancellationToken | undefined
+): Promise<{ scored: FileScore[]; stats: ScanStats }> {
+  const scored: FileScore[] = [];
+  const stats: ScanStats = {
+    skippedLarge: 0,
+    skippedUnreadable: 0
+  };
+  let nextIndex = 0;
+
+  const workerCount = Math.min(config.scanConcurrency, Math.max(files.length, 1));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      throwIfCancelled(token);
+
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= files.length) return;
+
+      const uri = files[index];
+      const relativePath = vscode.workspace.asRelativePath(uri);
+
+      try {
+        const file = await safeReadTextFile(uri, config.fileReadTimeoutMs, config.maxFileBytes);
+        throwIfCancelled(token);
+
+        if (!file) {
+          stats.skippedLarge += 1;
+          continue;
+        }
+
+        const tokens = estimateTokens(file.content);
+        const { score, reason } = scoreFile(relativePath, file.content.slice(0, 80_000), taskDescription, activeFile);
+
+        scored.push({
+          uri,
+          relativePath,
+          tokens,
+          bytes: file.bytes,
+          score,
+          reason
+        });
+      } catch (error: unknown) {
+        if (error instanceof vscode.CancellationError) throw error;
+        stats.skippedUnreadable += 1;
+      }
+    }
+  });
+
+  await Promise.all(workers);
+  return { scored, stats };
+}
+
+export async function buildContextPack(taskDescription: string, options: BuildContextPackOptions = {}): Promise<string> {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
     throw new Error("请先打开一个工作区");
   }
 
   const config = getConfig();
+  const token = options.cancellationToken;
   const aiIgnorePatterns = await readAiIgnorePatterns(config.fileReadTimeoutMs);
   const configuredExcludes = config.excludeGlobs;
   const excludeGlob = buildExcludeGlob([...aiIgnorePatterns, ...configuredExcludes]);
-
-  const files = await vscode.workspace.findFiles(config.includePattern, excludeGlob, config.maxFiles);
+  const { files, scopeLabel } = await resolveScanFiles(config, excludeGlob, options.rootUri, token);
   const activeFile = vscode.window.activeTextEditor
     ? vscode.workspace.asRelativePath(vscode.window.activeTextEditor.document.uri)
     : undefined;
 
-  const scored: FileScore[] = [];
-  const stats: ScanStats = {
-    skippedLarge: 0,
-    skippedUnreadable: 0
-  };
-
-  for (const uri of files) {
-    const relativePath = vscode.workspace.asRelativePath(uri);
-
-    try {
-      const file = await safeReadTextFile(uri, config.fileReadTimeoutMs, config.maxFileBytes);
-      if (!file) {
-        stats.skippedLarge += 1;
-        continue;
-      }
-
-      const tokens = estimateTokens(file.content);
-      const { score, reason } = scoreFile(relativePath, file.content.slice(0, 80_000), taskDescription, activeFile);
-
-      scored.push({
-        uri,
-        relativePath,
-        tokens,
-        bytes: file.bytes,
-        score,
-        reason
-      });
-    } catch {
-      stats.skippedUnreadable += 1;
-    }
-  }
+  const { scored, stats } = await scoreFiles(files, config, taskDescription, activeFile, token);
+  throwIfCancelled(token);
 
   scored.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
@@ -150,11 +215,13 @@ export async function buildContextPack(taskDescription: string): Promise<string>
   lines.push("");
   lines.push(`生成时间：${new Date().toLocaleString()}`);
   lines.push(`工作区：${folders[0].name}`);
+  lines.push(`扫描范围：${scopeLabel}`);
   lines.push(`任务描述：${taskDescription || "未填写，请补充"}`);
   lines.push("");
   lines.push("## 扫描概览");
   lines.push("");
-  lines.push(`- 扫描文件数：${formatNumber(scored.length)} / 上限 ${formatNumber(config.maxFiles)}`);
+  lines.push(`- 发现文件数：${formatNumber(files.length)} / 上限 ${formatNumber(config.maxFiles)}`);
+  lines.push(`- 成功分析文件数：${formatNumber(scored.length)}`);
   lines.push(`- 预估总代码 token：${formatNumber(totalTokens)}`);
   lines.push(`- 推荐上下文 token：${formatNumber(usedTokens)} / ${formatNumber(config.contextBudget)}`);
   lines.push(`- 推荐文件数：${formatNumber(selected.length)} / 上限 ${formatNumber(config.maxSelectedFiles)}`);
@@ -162,6 +229,7 @@ export async function buildContextPack(taskDescription: string): Promise<string>
   lines.push(`- 已应用配置排除规则数：${configuredExcludes.length}`);
   lines.push(`- 跳过过大文件：${formatNumber(stats.skippedLarge)}（单文件上限 ${formatBytes(config.maxFileBytes)}）`);
   lines.push(`- 跳过不可读/超时文件：${formatNumber(stats.skippedUnreadable)}（超时 ${config.fileReadTimeoutMs}ms）`);
+  lines.push(`- 并发读取数：${config.scanConcurrency}`);
   lines.push("");
   lines.push("## 建议优先提供给 AI 的文件");
   lines.push("");

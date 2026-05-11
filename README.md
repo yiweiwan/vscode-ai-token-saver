@@ -32,7 +32,9 @@ AI Token Saver 是一个 VS Code 插件，用来帮助开发者在使用 ChatGPT
     "**/*.snap"
   ],
   "aiTokenSaver.maxFileBytes": 1000000,
-  "aiTokenSaver.fileReadTimeoutMs": 1500
+  "aiTokenSaver.statusBarMaxFileBytes": 300000,
+  "aiTokenSaver.fileReadTimeoutMs": 1500,
+  "aiTokenSaver.scanConcurrency": 6
 }
 ```
 
@@ -44,7 +46,9 @@ AI Token Saver 是一个 VS Code 插件，用来帮助开发者在使用 ChatGPT
 - `includePattern`：扫描文件的 include glob
 - `excludeGlobs`：额外排除规则，可写 glob 或 `.aiignore` 风格规则
 - `maxFileBytes`：单文件读取大小上限，过大的文件会跳过
+- `statusBarMaxFileBytes`：状态栏自动估算的文件大小上限，避免大文件编辑时卡顿
 - `fileReadTimeoutMs`：单个文件读取/状态检查超时时间，超时会跳过
+- `scanConcurrency`：构建上下文包时的并发读取数量
 
 ## 使用方式
 
@@ -72,7 +76,9 @@ AI Token Saver: Copy Current File as AI Context
 AI Token Saver: Copy as Code Block
 ```
 
-也可以在编辑器右键菜单中直接使用估算、复制代码块、复制当前文件上下文、生成最小上下文包等命令。
+也可以在编辑器右键菜单中直接使用估算、复制代码块、复制当前文件上下文、生成最小上下文包等命令。在资源管理器中右键某个文件或目录执行上下文包命令时，插件会优先扫描该文件或目录，而不是整个工作区。
+
+生成 `.aiignore` 时，如果文件已经存在，插件会询问是追加缺失规则、覆盖，还是取消，避免误删已有规则。
 
 ## 开发运行
 

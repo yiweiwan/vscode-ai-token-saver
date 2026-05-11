@@ -1,8 +1,10 @@
 import * as vscode from "vscode";
 import { generateAiIgnoreFile } from "./aiIgnore";
+import { getConfig } from "./config";
 import { buildContextPack } from "./contextBuilder";
+import { withTimeout } from "./fileOps";
 import { buildCodeBlock, buildCurrentFileContext, createBugfixPrompt } from "./promptBuilder";
-import { estimateTokens, formatNumber, getTokenLevel } from "./tokenEstimator";
+import { estimateTokens, formatBytes, formatNumber, getTokenLevel } from "./tokenEstimator";
 
 function getActiveEditorOrWarn(): vscode.TextEditor | undefined {
   const editor = vscode.window.activeTextEditor;
@@ -11,6 +13,10 @@ function getActiveEditorOrWarn(): vscode.TextEditor | undefined {
     return undefined;
   }
   return editor;
+}
+
+function isCancellationError(error: unknown): boolean {
+  return error instanceof vscode.CancellationError || error instanceof Error && error.name === "Canceled";
 }
 
 async function openMarkdownDocument(content: string): Promise<void> {
@@ -60,10 +66,17 @@ function getSelectionOrDocumentText(editor: vscode.TextEditor): { text: string; 
   };
 }
 
+function pickCommandUri(resourceUri?: vscode.Uri, selectedUris?: vscode.Uri[]): vscode.Uri | undefined {
+  if (resourceUri) return resourceUri;
+  if (selectedUris && selectedUris.length > 0) return selectedUris[0];
+  return undefined;
+}
+
 export function activate(context: vscode.ExtensionContext) {
   const output = vscode.window.createOutputChannel("AI Token Saver");
   const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   let statusTimer: ReturnType<typeof setTimeout> | undefined;
+  let statusVersion = 0;
 
   statusBar.command = "aiTokenSaver.estimateCurrentFile";
   statusBar.text = "$(symbol-number) TokenSaver";
@@ -72,8 +85,9 @@ export function activate(context: vscode.ExtensionContext) {
 
   const updateStatusBar = () => {
     if (statusTimer) clearTimeout(statusTimer);
+    const version = ++statusVersion;
 
-    statusTimer = setTimeout(() => {
+    statusTimer = setTimeout(async () => {
       const editor = vscode.window.activeTextEditor;
       if (!editor) {
         statusBar.text = "$(symbol-number) TokenSaver";
@@ -81,9 +95,33 @@ export function activate(context: vscode.ExtensionContext) {
         return;
       }
 
-      const tokens = estimateTokens(editor.document.getText());
+      const config = getConfig();
+      const doc = editor.document;
+      const file = vscode.workspace.asRelativePath(doc.uri);
+
+      if (!doc.isUntitled && doc.uri.scheme !== "untitled") {
+        try {
+          const stat = await withTimeout(vscode.workspace.fs.stat(doc.uri), 500, "读取当前文件大小");
+          if (version !== statusVersion) return;
+
+          if (stat.size > config.statusBarMaxFileBytes) {
+            statusBar.text = "$(symbol-number) TokenSaver: 大文件";
+            statusBar.tooltip = new vscode.MarkdownString(
+              `**AI Token Saver**\n\n${file}\n\n文件大小：${formatBytes(stat.size)}\n\n已超过状态栏实时估算上限 ${formatBytes(config.statusBarMaxFileBytes)}，点击可手动估算。`
+            );
+            return;
+          }
+        } catch {
+          statusBar.text = "$(symbol-number) TokenSaver";
+          statusBar.tooltip = "暂时无法读取当前文件大小，点击可手动估算";
+          return;
+        }
+      }
+
+      const tokens = estimateTokens(doc.getText());
+      if (version !== statusVersion) return;
+
       const level = getTokenLevel(tokens);
-      const file = vscode.workspace.asRelativePath(editor.document.uri);
       statusBar.text = `$(symbol-number) ${formatNumber(tokens)} tokens`;
       statusBar.tooltip = new vscode.MarkdownString(
         `**AI Token Saver**\n\n${file}\n\n预估：${formatNumber(tokens)} tokens\n\n消耗等级：${level}\n\n点击查看详细报告`
@@ -140,11 +178,19 @@ export function activate(context: vscode.ExtensionContext) {
     "aiTokenSaver.generateAiIgnore",
     async () => {
       try {
-        const uri = await generateAiIgnoreFile();
-        const doc = await vscode.workspace.openTextDocument(uri);
+        const result = await generateAiIgnoreFile();
+        const doc = await vscode.workspace.openTextDocument(result.uri);
         await vscode.window.showTextDocument(doc, { preview: false });
-        await showTokenMessage(output, ".aiignore 已生成，可继续按项目补充规则");
+
+        const messages = {
+          created: ".aiignore 已生成，可继续按项目补充规则",
+          appended: `.aiignore 已追加 ${result.missingRuleCount} 条缺失规则`,
+          overwritten: ".aiignore 已覆盖为推荐规则",
+          unchanged: ".aiignore 已存在，且无需补充推荐规则"
+        };
+        await showTokenMessage(output, messages[result.action]);
       } catch (error: unknown) {
+        if (isCancellationError(error)) return;
         const message = error instanceof Error ? error.message : "生成 .aiignore 失败";
         vscode.window.showErrorMessage(message);
         output.appendLine(`[${new Date().toLocaleString()}] ${message}`);
@@ -154,21 +200,23 @@ export function activate(context: vscode.ExtensionContext) {
 
   const buildContextPackCommand = vscode.commands.registerCommand(
     "aiTokenSaver.buildContextPack",
-    async () => {
+    async (resourceUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
       try {
         const taskDescription = await vscode.window.showInputBox({
           prompt: "请输入你准备问 AI 的任务，例如：修复新增监听配置 422 报错",
           placeHolder: "修复 Bug / 新增功能 / 重构模块 / 解释代码",
           ignoreFocusOut: true
         });
+        if (taskDescription === undefined) return;
 
+        const rootUri = pickCommandUri(resourceUri, selectedUris);
         const markdown = await vscode.window.withProgress(
           {
             location: vscode.ProgressLocation.Notification,
             title: "AI Token Saver 正在扫描工作区",
-            cancellable: false
+            cancellable: true
           },
-          async () => buildContextPack(taskDescription || "")
+          async (_progress, token) => buildContextPack(taskDescription, { rootUri, cancellationToken: token })
         );
         const tokens = estimateTokens(markdown);
 
@@ -180,6 +228,10 @@ export function activate(context: vscode.ExtensionContext) {
           ["详情已写入新 Markdown 文档。"]
         );
       } catch (error: unknown) {
+        if (isCancellationError(error)) {
+          output.appendLine(`[${new Date().toLocaleString()}] 已取消生成上下文包`);
+          return;
+        }
         const message = error instanceof Error ? error.message : "生成上下文包失败";
         vscode.window.showErrorMessage(message);
         output.appendLine(`[${new Date().toLocaleString()}] ${message}`);
@@ -199,8 +251,9 @@ export function activate(context: vscode.ExtensionContext) {
           placeHolder: "例如：POST /api/watch-config 422 Unprocessable Entity",
           ignoreFocusOut: true
         });
+        if (errorLog === undefined) return;
 
-        const prompt = createBugfixPrompt(errorLog || "", relatedFile ? [relatedFile] : []);
+        const prompt = createBugfixPrompt(errorLog, relatedFile ? [relatedFile] : []);
         const tokens = estimateTokens(prompt);
         await openMarkdownDocument(prompt);
         await vscode.env.clipboard.writeText(prompt);

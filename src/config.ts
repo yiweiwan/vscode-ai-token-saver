@@ -5,7 +5,9 @@ export interface AiTokenSaverConfig {
   contextBudget: number;
   maxSelectedFiles: number;
   maxFileBytes: number;
+  statusBarMaxFileBytes: number;
   fileReadTimeoutMs: number;
+  scanConcurrency: number;
   includePattern: string;
   excludeGlobs: string[];
 }
@@ -53,7 +55,9 @@ export function getConfig(): AiTokenSaverConfig {
     contextBudget: clampNumber(config.get<number>("contextBudget", 20_000), 1000, 500_000, 20_000),
     maxSelectedFiles: clampNumber(config.get<number>("maxSelectedFiles", 20), 1, 100, 20),
     maxFileBytes: clampNumber(config.get<number>("maxFileBytes", 1_000_000), 1024, 50_000_000, 1_000_000),
+    statusBarMaxFileBytes: clampNumber(config.get<number>("statusBarMaxFileBytes", 300_000), 1024, 20_000_000, 300_000),
     fileReadTimeoutMs: clampNumber(config.get<number>("fileReadTimeoutMs", 1500), 100, 30_000, 1500),
+    scanConcurrency: clampNumber(config.get<number>("scanConcurrency", 6), 1, 24, 6),
     includePattern: config.get<string>("includePattern", DEFAULT_INCLUDE_PATTERN) || DEFAULT_INCLUDE_PATTERN,
     excludeGlobs: config.get<string[]>("excludeGlobs", [])
       .map((item) => item.trim())
